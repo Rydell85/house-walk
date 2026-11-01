@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>House walk</title>
+<style>
+  :root { --fg:#f4f1ea; --dim:#b9b3a6; --panel:rgba(20,20,22,.72); }
+  html,body { margin:0; height:100%; overflow:hidden; touch-action:none; -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; background:#9fb6c9; font:14px/1.45 system-ui,Segoe UI,sans-serif; color:var(--fg); }
+  canvas { display:block; }
+  #overlay { position:fixed; inset:0; display:grid; place-items:center; background:rgba(10,12,14,.55); cursor:pointer; }
+  #card { background:var(--panel); padding:24px 28px; border-radius:10px; max-width:440px; } /* no backdrop-filter: blurring over the WebGL canvas cost ~300 ms a frame */
+  #card h1 { margin:0 0 4px; font-size:20px; font-weight:600; }
+  #card p { margin:6px 0; color:var(--dim); }
+  kbd { display:inline-block; min-width:18px; padding:1px 6px; border:1px solid #666; border-radius:4px; background:#2a2a2d; color:var(--fg); font:12px ui-monospace,Consolas,monospace; text-align:center; }
+  table { border-collapse:collapse; margin-top:10px; }
+  td { padding:2px 10px 2px 0; vertical-align:top; }
+  #start { margin-top:14px; font-weight:600; color:var(--fg); }
+  #hud { position:fixed; left:12px; bottom:12px; background:var(--panel); padding:6px 10px; border-radius:6px; font:12px ui-monospace,Consolas,monospace; pointer-events:none; }
+  /* touch controls (phones / tablets only) */
+  .touch-only { display:none; }
+  body.touch table.touch-only { display:table; }
+  body.touch .desk-only { display:none; }
+  #joyBase { position:fixed; width:120px; height:120px; margin:-60px 0 0 -60px; border-radius:50%; border:2px solid rgba(255,255,255,.45); background:rgba(0,0,0,.15); pointer-events:none; visibility:hidden; }
+  #joyKnob { position:absolute; left:50%; top:50%; width:52px; height:52px; margin:-26px 0 0 -26px; border-radius:50%; background:rgba(255,255,255,.6); }
+  #pad { position:fixed; right:calc(14px + env(safe-area-inset-right)); bottom:calc(14px + env(safe-area-inset-bottom)); display:none; gap:10px; align-items:flex-end; }
+  body.touch.playing #pad { display:flex; }
+  .btn { width:60px; height:60px; border-radius:50%; border:0; background:rgba(20,20,22,.6); color:#fff; font:600 13px system-ui,sans-serif; }
+  .btn.on { background:rgba(200,160,90,.85); }
+  #flyUD { display:none; flex-direction:column; gap:10px; }
+  #flyUD.show { display:flex; }
+  #spots { position:fixed; top:calc(10px + env(safe-area-inset-top)); left:50%; transform:translateX(-50%); display:none; gap:6px; flex-wrap:wrap; justify-content:center; max-width:calc(100% - 90px); }
+  body.touch.playing #spots { display:flex; }
+  #spots button { border:0; border-radius:14px; padding:6px 10px; background:rgba(20,20,22,.6); color:#fff; font:12px system-ui,sans-serif; }
+  #menu { position:fixed; top:calc(10px + env(safe-area-inset-top)); left:calc(10px + env(safe-area-inset-left)); width:40px; height:40px; font-size:18px; display:none; }
+  body.touch.playing #menu { display:block; }
+  body.touch #hud { display:none; }
+  #cross { position:fixed; left:50%; top:50%; width:6px; height:6px; margin:-3px 0 0 -3px; border-radius:50%; background:rgba(255,255,255,.7); pointer-events:none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.3/build/index.module.js"
+} }
+</script>
+</head>
+<body>
+<div id="overlay"><div id="card">
+  <h1>The house</h1>
+  <p id="status">Loading the house…</p>
+  <table class="desk-only">
+    <tr><td><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd></td><td>walk, mouse to look</td></tr>
+    <tr><td><kbd>Shift</kbd></td><td>run</td></tr>
+    <tr><td><kbd>Space</kbd></td><td>jump</td></tr>
+    <tr><td><kbd>F</kbd></td><td>fly / walk through walls (<kbd>E</kbd> up, <kbd>Q</kbd> down)</td></tr>
+    <tr><td><kbd>1</kbd>–<kbd>6</kbd></td><td>street · terrace · plan 1 · plan 2 allrum · office · balcony</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>release the mouse</td></tr>
+  </table>
+  <table class="touch-only">
+    <tr><td>Left thumb</td><td>walk (push to the edge to run)</td></tr>
+    <tr><td>Right thumb</td><td>drag to look around</td></tr>
+    <tr><td>Buttons</td><td>jump, fly (through walls), places along the top</td></tr>
+    <tr><td>Tip</td><td>turn the phone sideways</td></tr>
+  </table>
+  <p id="start"></p>
+</div></div>
+<div id="cross"></div>
+<div id="hud"></div>
+<div id="joyBase"><div id="joyKnob"></div></div>
+<button id="menu" class="btn">&#9776;</button>
+<div id="spots">
+  <button data-spot="1">Street</button><button data-spot="2">Terrace</button><button data-spot="3">Plan 1</button>
+  <button data-spot="4">Plan 2</button><button data-spot="5">Office</button><button data-spot="6">Balcony</button>
+</div>
+<div id="pad">
+  <div id="flyUD"><button class="btn" data-hold="KeyE">Up</button><button class="btn" data-hold="KeyQ">Down</button></div>
+  <button class="btn" id="flyBtn">Fly</button>
+  <button class="btn" id="jumpBtn">Jump</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
+
+THREE.Mesh.prototype.raycast = acceleratedRaycast;
+
+// ---- player dimensions (metres) ----
+const RADIUS = 0.20, HEIGHT = 1.75, EYE = 1.62;
+const STEP = 0.30;               // anything lower than this is stepped onto (risers are 0.18)
+const WALK = 1.7, RUN = 4.0, FLY = 6, GRAVITY = 9.81, JUMP = 3.6;
+const PHYS_STEPS = 5;
+
+// Blender (X north, Y west, Z up) -> three (x, z, -y). Yaw 0 looks Blender +Y (west).
+const B = (x, y, z) => new THREE.Vector3(x, z, -y);
+const FACE = { west: 0, north: -Math.PI / 2, south: Math.PI / 2, east: Math.PI };
+const SPOTS = {
+  1: { p: B(10.1, -11, 0.5), yaw: FACE.west },  // entrance path, facing the front door
+  2: { p: B(4.5, 8.5, 0.5), yaw: FACE.north },  // terrace by the west wall
+  3: { p: B(12.4, 4.2, 0.2), yaw: FACE.south }, // plan 1 kitchen/allrum
+  4: { p: B(15.3, 4.3, 3.2), yaw: FACE.south }, // plan 2 allrum
+  5: { p: B(16.0, 7.2, 3.2), yaw: FACE.west - 0.5 }, // office, beside the desk, towards the balcony door
+  6: { p: B(14.4, 12.2, 3.2), yaw: FACE.west }, // balcony
+};
+
+// Phones and tablets: touch controls and a lighter render (resolution and shadow map).
+const TOUCH = matchMedia('(pointer: coarse)').matches && !matchMedia('(pointer: fine)').matches;
+if (TOUCH) document.body.classList.add('touch');
+
+// ---- renderer / scene ----
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, TOUCH ? 1.5 : 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fb6c9);
+scene.fog = new THREE.Fog(0x9fb6c9, 60, 220);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 500);
+camera.rotation.order = 'YXZ';
+
+// Light ground colour stands in for bounce light, so ceilings indoors are not brown.
+scene.add(new THREE.HemisphereLight(0xe4edf5, 0xcfc6b4, 1.25));
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.6);
+sun.position.copy(B(-20, 25, 30)); // from the south-west, afternoon
+sun.target.position.copy(B(6, 4, 0));
+sun.castShadow = true;
+sun.shadow.mapSize.setScalar(TOUCH ? 2048 : 4096);
+Object.assign(sun.shadow.camera, { left: -35, right: 35, top: 35, bottom: -35, near: 1, far: 120 });
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.03;
+scene.add(sun, sun.target);
+
+// Big flat ground far out, so the horizon is not empty beyond the terrain model.
+const far = new THREE.Mesh(new THREE.CircleGeometry(400, 48), new THREE.MeshLambertMaterial({ color: 0x55603c }));
+far.rotation.x = -Math.PI / 2; far.position.y = -3.0;
+scene.add(far);
+
+// ---- load house + build the collision mesh ----
+let collider = null;
+const status = document.getElementById('status');
+const startTxt = document.getElementById('start');
+
+// Door boxes (Blender coords) from export_glb.py: collision triangles wholly inside are dropped.
+const doorsReq = fetch('doors.json').then(r => r.json()).catch(() => []);
+
+new GLTFLoader().load('house.glb', async gltf => {
+  const doors = await doorsReq;
+  const inDoor = (x, y, z) => { const bx = x, by = -z, bz = y;
+    return doors.some(({ box: b }) => bx > b[0] && bx < b[1] && by > b[2] && by < b[3] && bz > b[4] && bz < b[5]); };
+  const root = gltf.scene;
+  const parts = [];
+  root.updateMatrixWorld(true);
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    o.castShadow = o.receiveShadow = true;
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats) {
+      m.side = THREE.DoubleSide;
+      if (m.transparent) { o.castShadow = false; m.depthWrite = false; }
+    }
+    let p = o, noCollide = false;
+    while (p) { if (p.userData && p.userData.nocollide) noCollide = true; p = p.parent; }
+    if (noCollide) return;
+    const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    const a = g.getAttribute('position').clone().applyMatrix4(o.matrixWorld).array;
+    const keep = [];
+    for (let i = 0; i < a.length; i += 9) {
+      if (inDoor(a[i], a[i+1], a[i+2]) && inDoor(a[i+3], a[i+4], a[i+5]) && inDoor(a[i+6], a[i+7], a[i+8])) continue;
+      for (let k = 0; k < 9; k++) keep.push(a[i + k]);
+    }
+    parts.push(keep);
+  });
+  scene.add(root);
+
+  const total = parts.reduce((n, a) => n + a.length, 0);
+  const all = new Float32Array(total);
+  let off = 0;
+  for (const a of parts) { all.set(a, off); off += a.length; }
+  const cg = new THREE.BufferGeometry();
+  cg.setAttribute('position', new THREE.BufferAttribute(all, 3));
+  cg.boundsTree = new MeshBVH(cg);
+  collider = new THREE.Mesh(cg, new THREE.MeshBasicMaterial({ visible: false }));
+  scene.add(collider);
+
+  teleport(1);
+  status.textContent = `${(total / 9).toLocaleString('sv-SE')} triangles with collision.`;
+  startTxt.textContent = TOUCH ? 'Tap to start' : 'Click to start';
+}, e => {
+  if (e.total) status.textContent = `Loading the house… ${Math.round(100 * e.loaded / e.total)}%`;
+}, err => {
+  status.textContent = 'Could not load the house. Locally, open the page through walk.bat (a web server), not by double-clicking.';
+  console.error(err);
+});
+
+// ---- controls ----
+const controls = new PointerLockControls(camera, document.body);
+const overlay = document.getElementById('overlay');
+let touchPlaying = false;
+const playing = () => controls.isLocked || touchPlaying;
+const setPlaying = on => { overlay.style.display = on ? 'none' : 'grid'; document.body.classList.toggle('playing', on); };
+overlay.addEventListener('click', () => {
+  if (!collider) return;
+  if (TOUCH) { touchPlaying = true; setPlaying(true); }
+  else controls.lock();
+});
+controls.addEventListener('lock', () => setPlaying(true));
+controls.addEventListener('unlock', () => setPlaying(false));
+
+const keys = {};
+let fly = false;
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code === 'KeyF') toggleFly();
+  if (e.code === 'Space') jump();
+  const n = parseInt(e.key, 10);
+  if (SPOTS[n]) teleport(n);
+});
+addEventListener('keyup', e => keys[e.code] = false);
+function jump() { if (grounded && !fly) { vel.y = JUMP; grounded = false; } }
+function toggleFly() {
+  fly = !fly; vel.set(0, 0, 0);
+  document.getElementById('flyBtn').classList.toggle('on', fly);
+  document.getElementById('flyUD').classList.toggle('show', fly);
+}
+
+// ---- touch: left half = floating joystick, right half = drag to look ----
+const joy = { id: null, x: 0, y: 0, ox: 0, oy: 0 };
+const look = { id: null, x: 0, y: 0 };
+const JOY_R = 50, LOOK_SPEED = 0.0055;
+const joyBase = document.getElementById('joyBase'), joyKnob = document.getElementById('joyKnob');
+const canvas = renderer.domElement;
+canvas.addEventListener('touchstart', e => {
+  for (const t of e.changedTouches) {
+    if (t.clientX < innerWidth / 2 && joy.id === null) {
+      Object.assign(joy, { id: t.identifier, ox: t.clientX, oy: t.clientY, x: 0, y: 0 });
+      joyBase.style.left = t.clientX + 'px'; joyBase.style.top = t.clientY + 'px';
+      joyBase.style.visibility = 'visible'; joyKnob.style.transform = '';
+    } else if (look.id === null) {
+      Object.assign(look, { id: t.identifier, x: t.clientX, y: t.clientY });
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === joy.id) {
+      let dx = t.clientX - joy.ox, dy = t.clientY - joy.oy;
+      const d = Math.hypot(dx, dy);
+      if (d > JOY_R) { dx *= JOY_R / d; dy *= JOY_R / d; }
+      joy.x = dx / JOY_R; joy.y = dy / JOY_R;
+      joyKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+    } else if (t.identifier === look.id) {
+      camera.rotation.y -= (t.clientX - look.x) * LOOK_SPEED;
+      camera.rotation.x = Math.max(-1.45, Math.min(1.45, camera.rotation.x - (t.clientY - look.y) * LOOK_SPEED));
+      look.x = t.clientX; look.y = t.clientY;
+    }
+  }
+  e.preventDefault();
+}, { passive: false });
+const touchEnd = e => {
+  for (const t of e.changedTouches) {
+    if (t.identifier === joy.id) { joy.id = null; joy.x = joy.y = 0; joyBase.style.visibility = 'hidden'; }
+    if (t.identifier === look.id) look.id = null;
+  }
+};
+canvas.addEventListener('touchend', touchEnd);
+canvas.addEventListener('touchcancel', touchEnd);
+const tap = (el, fn) => el.addEventListener('touchstart', e => { e.preventDefault(); e.stopPropagation(); fn(); }, { passive: false });
+tap(document.getElementById('jumpBtn'), jump);
+tap(document.getElementById('flyBtn'), toggleFly);
+tap(document.getElementById('menu'), () => { touchPlaying = false; setPlaying(false); });
+document.querySelectorAll('#spots button').forEach(b => tap(b, () => teleport(+b.dataset.spot)));
+document.querySelectorAll('[data-hold]').forEach(b => {
+  b.addEventListener('touchstart', e => { e.preventDefault(); keys[b.dataset.hold] = true; }, { passive: false });
+  b.addEventListener('touchend', () => keys[b.dataset.hold] = false);
+  b.addEventListener('touchcancel', () => keys[b.dataset.hold] = false);
+});
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---- physics ----
+// feet = point on the floor under the player. The capsule floats STEP above the feet,
+// so low steps pass under it and the ground ray lifts the player onto them.
+const feet = new THREE.Vector3();
+const vel = new THREE.Vector3();
+let grounded = false;
+const ray = new THREE.Raycaster(); ray.firstHitOnly = true;
+const DOWN = new THREE.Vector3(0, -1, 0);
+const seg = new THREE.Line3(), box = new THREE.Box3();
+const tp = new THREE.Vector3(), cp = new THREE.Vector3(), push = new THREE.Vector3();
+
+function groundAt(pos, above, maxDrop) {
+  ray.set(tp.set(pos.x, pos.y + above, pos.z), DOWN);
+  ray.far = above + maxDrop;
+  const h = ray.intersectObject(collider)[0];
+  if (!h) return null;
+  const n = h.face.normal; // collider has identity matrix
+  if (Math.abs(n.y) < 0.6) return null;   // too steep to stand on
+  return h.point.y;
+}
+
+function teleport(n) {
+  const s = SPOTS[n];
+  if (!collider) return;
+  feet.copy(s.p);
+  const g = groundAt(feet, 0.2, 10);
+  if (g !== null) feet.y = g;
+  vel.set(0, 0, 0);
+  camera.rotation.set(0, s.yaw, 0);
+}
+
+function collideCapsule() {
+  const bottom = feet.y + STEP + RADIUS, top = feet.y + HEIGHT - RADIUS;
+  seg.start.set(feet.x, top, feet.z);
+  seg.end.set(feet.x, bottom, feet.z);
+  box.makeEmpty().expandByPoint(seg.start).expandByPoint(seg.end);
+  box.min.addScalar(-RADIUS); box.max.addScalar(RADIUS);
+  push.set(0, 0, 0);
+  collider.geometry.boundsTree.shapecast({
+    intersectsBounds: b => b.intersectsBox(box),
+    intersectsTriangle: tri => {
+      const d = tri.closestPointToSegment(seg, tp, cp);
+      if (d < RADIUS) {
+        const dir = cp.sub(tp).normalize();
+        dir.y = Math.min(dir.y, 0);       // walls push sideways; ceilings push down, never up
+        seg.start.addScaledVector(dir, RADIUS - d);
+        seg.end.addScaledVector(dir, RADIUS - d);
+      }
+    },
+  });
+  feet.x = seg.start.x; feet.z = seg.start.z;
+  feet.y = Math.min(feet.y, seg.start.y - (HEIGHT - RADIUS));
+}
+
+const fwd = new THREE.Vector3(), side = new THREE.Vector3(), wish = new THREE.Vector3();
+function step(dt) {
+  camera.getWorldDirection(fwd);
+  if (!fly) fwd.y = 0;
+  fwd.normalize();
+  side.crossVectors(fwd, camera.up).normalize();
+  wish.set(0, 0, 0);
+  if (keys.KeyW) wish.add(fwd);
+  if (keys.KeyS) wish.sub(fwd);
+  if (keys.KeyD) wish.add(side);
+  if (keys.KeyA) wish.sub(side);
+  if (wish.lengthSq()) wish.normalize();
+  // Joystick: analog, so a small push walks slowly; near the edge it runs.
+  const joyMag = Math.hypot(joy.x, joy.y);
+  if (joyMag > 0.12) wish.addScaledVector(fwd, -joy.y).addScaledVector(side, joy.x);
+  if (wish.lengthSq() > 1) wish.normalize();
+  const running = keys.ShiftLeft || keys.ShiftRight || joyMag > 0.92;
+
+  if (fly) {
+    const sp = FLY * (running ? 2.5 : 1);
+    if (keys.KeyE) wish.y += 1;
+    if (keys.KeyQ) wish.y -= 1;
+    feet.addScaledVector(wish, sp * dt);
+    return;
+  }
+
+  const sp = running ? RUN : WALK;
+  feet.x += wish.x * sp * dt;
+  feet.z += wish.z * sp * dt;
+  vel.y -= GRAVITY * dt;
+  feet.y += vel.y * dt;
+
+  collideCapsule();
+
+  // Floor: snap to the ground if it is within the step height (up) or a little below (down a stair).
+  const g = groundAt(feet, STEP + RADIUS, grounded ? 0.35 : Math.max(0, -vel.y * dt) + 0.02);
+  if (g !== null && vel.y <= 0 && feet.y <= g + 0.02) {
+    feet.y = g; vel.y = 0; grounded = true;
+  } else if (g !== null && grounded && vel.y <= 0) {
+    feet.y = g; vel.y = 0;                // stepping down a riser
+  } else {
+    grounded = false;
+  }
+  if (feet.y < -40) teleport(1);
+}
+
+// ---- loop ----
+const hud = document.getElementById('hud');
+const clock = new THREE.Clock();
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (collider && playing()) for (let i = 0; i < PHYS_STEPS; i++) step(dt / PHYS_STEPS);
+  camera.position.set(feet.x, feet.y + EYE, feet.z);
+  // Blender coordinates on the HUD, so a spot can be matched against house.json.
+  hud.textContent = `X ${feet.x.toFixed(2)}  Y ${(-feet.z).toFixed(2)}  Z ${feet.y.toFixed(2)}` + (fly ? '   FLY' : '');
+  renderer.render(scene, camera);
+  if (!window.walk?.paused) requestAnimationFrame(frame);
+}
+frame();
+window.walk = { renderer, scene, camera, sun, teleport, feet, keys, joy, step: () => step(1 / 60), paused: false, frame }; // for debugging from the console
+</script>
+</body>
+</html>
