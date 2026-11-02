@@ -105,6 +105,15 @@ for o in H["openings"]:
     a0, a1 = o["a"][0] - 0.05, o["a"][1] + 0.05
     box = [a0, a1, d0, d1] if axis == "y" else [d0, d1, a0, a1]   # Blender x0,x1,y0,y1
     doors.append({"id": o["id"], "box": box + [z0 + PAD, z1 - PAD]})
+# Greenhouse doors (house.json greenhouse): one in each glass end wall, floor height from the built floor.
+gh = H.get("greenhouse")
+gf = bpy.data.objects.get("Växthus golv")
+if gh and gf:
+    zf = max((gf.matrix_world @ v.co).z for v in gf.data.vertices)
+    d0, d1 = gh["door"]
+    for i, wy in enumerate((gh["y"][0], gh["y"][1] - 0.06)):
+        doors.append({"id": f"GH{i + 1}", "box": [d0 - 0.05, d1 + 0.05, wy - 0.3, wy + 0.36,
+                                                  zf + PAD, zf + gh["door_h"] - PAD]})
 json.dump(doors, open(os.path.join(HERE, "doors.json"), "w"), indent=1)
 print("DOORS", [d["id"] for d in doors])
 
